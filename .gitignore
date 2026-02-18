@@ -1,2 +1,4 @@
-__pycache___
+__pycache__/
 .vscode
+.build/
+DerivedData/
