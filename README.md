@@ -49,7 +49,54 @@ swift run AIwechatMac
 open Package.swift
 ```
 
-### 4. 数据集路径
+### 4. 打包为 `.app`（双击运行）
+
+在项目根目录执行：
+
+```bash
+swift build -c release
+
+APP_DIR="dist/AIwechat.app"
+mkdir -p "$APP_DIR/Contents/MacOS" "$APP_DIR/Contents/Resources"
+cp .build/release/AIwechatMac "$APP_DIR/Contents/MacOS/AIwechat"
+chmod +x "$APP_DIR/Contents/MacOS/AIwechat"
+
+cat > "$APP_DIR/Contents/Info.plist" <<'PLIST'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleDevelopmentRegion</key>
+    <string>en</string>
+    <key>CFBundleExecutable</key>
+    <string>AIwechat</string>
+    <key>CFBundleIdentifier</key>
+    <string>com.aiwechat.app</string>
+    <key>CFBundleInfoDictionaryVersion</key>
+    <string>6.0</string>
+    <key>CFBundleName</key>
+    <string>AIwechat</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleShortVersionString</key>
+    <string>1.0.0</string>
+    <key>CFBundleVersion</key>
+    <string>1</string>
+    <key>LSMinimumSystemVersion</key>
+    <string>13.0</string>
+    <key>NSHighResolutionCapable</key>
+    <true/>
+</dict>
+</plist>
+PLIST
+
+/usr/bin/codesign --force --deep --sign - "$APP_DIR"
+```
+
+生成后的应用路径：`dist/AIwechat.app`  
+首次打开若被 Gatekeeper 拦截，右键应用选择“打开”再确认一次即可。
+
+### 5. 数据集路径
 
 点赞反馈默认写入：
 

@@ -2,3 +2,9 @@ __pycache__/
 .vscode
 .build/
 DerivedData/
+dist/
+*.app
+.home/
+.cache/
+.swiftpm-cache/
+.clang-module-cache/
