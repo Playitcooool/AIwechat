@@ -59,6 +59,7 @@ swift build -c release
 APP_DIR="dist/AIwechat.app"
 mkdir -p "$APP_DIR/Contents/MacOS" "$APP_DIR/Contents/Resources"
 cp .build/release/AIwechatMac "$APP_DIR/Contents/MacOS/AIwechat"
+cp Assets/AIwechat.icns "$APP_DIR/Contents/Resources/AIwechat.icns"
 chmod +x "$APP_DIR/Contents/MacOS/AIwechat"
 
 cat > "$APP_DIR/Contents/Info.plist" <<'PLIST'
@@ -74,6 +75,8 @@ cat > "$APP_DIR/Contents/Info.plist" <<'PLIST'
     <string>com.aiwechat.app</string>
     <key>CFBundleInfoDictionaryVersion</key>
     <string>6.0</string>
+    <key>CFBundleIconFile</key>
+    <string>AIwechat</string>
     <key>CFBundleName</key>
     <string>AIwechat</string>
     <key>CFBundlePackageType</key>
