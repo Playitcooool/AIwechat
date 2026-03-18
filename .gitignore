@@ -1,5 +1,5 @@
 __pycache__/
-.vscode
+.vscode/
 .build/
 DerivedData/
 dist/
@@ -8,3 +8,7 @@ dist/
 .cache/
 .swiftpm-cache/
 .clang-module-cache/
+*.xcodeproj/
+*.xcworkspace/
+*.swp
+.DS_Store

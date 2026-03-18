@@ -16,13 +16,13 @@ struct AIwechatMacApp: App {
     var body: some Scene {
         WindowGroup("AIwechat") {
             ContentView(viewModel: viewModel)
-                .frame(minWidth: 320, minHeight: 360)
+                .frame(minWidth: 300, minHeight: 320)
                 .onAppear {
                     viewModel.startMonitoring()
                     NSApp.activate(ignoringOtherApps: true)
                 }
         }
-        .defaultSize(width: 340, height: 400)
+        .defaultSize(width: 320, height: 380)
         .windowResizability(.contentSize)
     }
 }
