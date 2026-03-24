@@ -13,6 +13,15 @@ struct AppConfig {
     static let ignoreSelfPrefixes = ["我:", "我：", "Me:", "Me："]
     static let myName = ""
     static let pollInterval: TimeInterval = 0.8
+
+    // 视觉识别配置
+    static let visionModel = "gpt-4o"
+    static let visionBaseURL = "https://api.openai.com/v1"
+}
+
+enum RecognitionMode {
+    case clipboard
+    case vision
 }
 
 struct ChatCompletionRequest: Encodable {
@@ -48,6 +57,7 @@ struct StyleProfile: Codable {
 final class AssistantViewModel: ObservableObject {
     @Published var statusText: String = "自动监听中"
     @Published var suggestions: [String] = []
+    @Published var recognitionMode: RecognitionMode = .clipboard
 
     private var timer: Timer?
     private var lastClipboard = ""
@@ -58,6 +68,8 @@ final class AssistantViewModel: ObservableObject {
     private var lastUserMessage = ""
     private var lastContextSnapshot: [String] = []
     private var styleProfile: StyleProfile?
+
+    private var visionRecognizer: VisionMessageRecognizer?
 
     func startMonitoring() {
         refreshStyleProfile()
@@ -323,5 +335,122 @@ final class AssistantViewModel: ObservableObject {
         try? encoder.encode(profile).write(to: styleProfileURL)
 
         styleProfile = profile
+    }
+
+    // MARK: - Vision Mode
+
+    func captureAndRecognize() {
+        statusText = "截取屏幕中..."
+        Task {
+            do {
+                let imageData = try ScreenCapture.captureScreen()
+                try await recognizeImage(imageData)
+            } catch {
+                await MainActor.run {
+                    statusText = "截图失败: \(error.localizedDescription)"
+                }
+            }
+        }
+    }
+
+    private func recognizeImage(_ imageData: Data) async throws {
+        await MainActor.run {
+            statusText = "识别消息中..."
+        }
+
+        if visionRecognizer == nil {
+            visionRecognizer = VisionMessageRecognizer()
+        }
+
+        guard let recognizer = visionRecognizer else { return }
+
+        do {
+            let messages = try await recognizer.recognize(imageData: imageData)
+            await MainActor.run {
+                processRecognizedMessages(messages)
+            }
+        } catch {
+            await MainActor.run {
+                statusText = "识别失败: \(error.localizedDescription)"
+            }
+        }
+    }
+
+    private func processRecognizedMessages(_ messages: RecognizedMessages) {
+        // 构建上下文消息列表：先放对方消息，再放我的消息
+        var allMessages: [String] = []
+        allMessages.append(contentsOf: messages.their)
+        allMessages.append(contentsOf: messages.mine)
+
+        guard !allMessages.isEmpty else {
+            statusText = "未识别到消息"
+            return
+        }
+
+        // 更新上下文
+        contextMessages = allMessages
+
+        // 使用最后一条对方消息生成回复
+        if let lastTheirMessage = messages.their.last {
+            lastUserMessage = lastTheirMessage
+            lastContextSnapshot = contextMessages
+            generateReplyFromVision(for: lastTheirMessage)
+        } else {
+            statusText = "没有对方消息"
+        }
+    }
+
+    private func generateReplyFromVision(for userMessage: String) {
+        isGenerating = true
+        statusText = "生成中..."
+
+        Task {
+            do {
+                let content = try await fetchCompletion(prompt: buildPromptFromVision(userMessage))
+                let parsed = parseSuggestions(content)
+                suggestions = Array(parsed.prefix(3))
+                await MainActor.run {
+                    let count = contextMessages.count
+                    statusText = "已生成（识别 \(count) 条消息）"
+                }
+            } catch {
+                await MainActor.run {
+                    suggestions = []
+                    statusText = "生成失败: \(error.localizedDescription)"
+                }
+            }
+
+            isGenerating = false
+        }
+    }
+
+    private func buildPromptFromVision(_ userMessage: String) -> String {
+        let styleHint = styleInstructionBlock()
+
+        // 构建视觉模式下的上下文信息
+        let theirMessages = contextMessages.filter { msg in
+            !AppConfig.ignoreSelfPrefixes.contains { msg.hasPrefix($0) }
+        }
+
+        if theirMessages.count <= 1 {
+            return "对方消息：\n\(userMessage)\n\n请输出3条不同风格的中文回复建议。\n\(styleHint)\n请严格输出一个 JSON 数组，示例：[\"回复1\",\"回复2\",\"回复3\"]。"
+        }
+
+        // 多条消息时，显示完整上下文
+        let history = contextMessages.enumerated().map { "\($0.offset + 1). \($0.element)" }.joined(separator: "\n")
+        return "聊天上下文：\n\(history)\n\n请基于以上上下文，输出3条不同风格的中文回复建议。\n\(styleHint)\n请严格输出一个 JSON 数组，示例：[\"回复1\",\"回复2\",\"回复3\"]。"
+    }
+
+    func toggleRecognitionMode() {
+        switch recognitionMode {
+        case .clipboard:
+            recognitionMode = .vision
+            stopMonitoring()
+            statusText = "视觉模式（快捷键 ⌘⇧V 触发）"
+        case .vision:
+            recognitionMode = .clipboard
+            startMonitoring()
+            statusText = "剪贴板模式"
+        }
     }
 }

@@ -43,6 +43,8 @@ struct ContentView: View {
                 }
                 .buttonStyle(ActionButtonStyle(bg: Color(red: 0.12, green: 0.16, blue: 0.22)))
             }
+
+            modeToggleBar
         }
         .padding(14)
         .background(Color(red: 0.06, green: 0.09, blue: 0.15))
@@ -81,6 +83,42 @@ struct ContentView: View {
         .background(Color(red: 0.07, green: 0.11, blue: 0.19))
         .overlay(RoundedRectangle(cornerRadius: 10).stroke(Color(red: 0.18, green: 0.25, blue: 0.38), lineWidth: 1))
         .clipShape(RoundedRectangle(cornerRadius: 10))
+    }
+
+    private var modeToggleBar: some View {
+        HStack(spacing: 12) {
+            Text("模式：")
+                .font(.system(size: 11))
+                .foregroundStyle(Color(red: 0.66, green: 0.73, blue: 0.86))
+
+            Button {
+                viewModel.toggleRecognitionMode()
+            } label: {
+                HStack(spacing: 4) {
+                    Image(systemName: viewModel.recognitionMode == .clipboard ? "doc.on.clipboard" : "camera.viewfinder")
+                        .font(.system(size: 10))
+                    Text(viewModel.recognitionMode == .clipboard ? "剪贴板" : "视觉")
+                        .font(.system(size: 11, weight: .medium))
+                }
+                .foregroundStyle(.white)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 5)
+                .background(viewModel.recognitionMode == .clipboard
+                    ? Color(red: 0.12, green: 0.16, blue: 0.22)
+                    : Color(red: 0.2, green: 0.4, blue: 0.6))
+                .clipShape(RoundedRectangle(cornerRadius: 6))
+            }
+            .buttonStyle(.plain)
+
+            Spacer()
+
+            if viewModel.recognitionMode == .vision {
+                Text("⌘⇧V 截屏识别")
+                    .font(.system(size: 10))
+                    .foregroundStyle(Color(red: 0.5, green: 0.6, blue: 0.7))
+            }
+        }
+        .padding(.top, 4)
     }
 }
 
