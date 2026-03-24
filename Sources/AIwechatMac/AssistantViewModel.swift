@@ -58,6 +58,12 @@ final class AssistantViewModel: ObservableObject {
     @Published var statusText: String = "自动监听中"
     @Published var suggestions: [String] = []
     @Published var recognitionMode: RecognitionMode = .clipboard
+    @Published var showSettings = false
+    @Published var showHistory = false
+    @Published var pendingRecognizedMessages: RecognizedMessages?
+    @Published var streamingText: String = ""
+    @Published var historyCount: Int = 0
+    @Published var isStreaming: Bool = false
 
     private var timer: Timer?
     private var lastClipboard = ""
@@ -71,10 +77,31 @@ final class AssistantViewModel: ObservableObject {
 
     private var visionRecognizer: VisionMessageRecognizer?
 
+    var effectiveContextWindowSize: Int {
+        SettingsManager.shared.settings.contextWindowSize
+    }
+
+    var effectiveWechatOnlyMode: Bool {
+        SettingsManager.shared.settings.wechatOnlyMode
+    }
+
+    var effectivePollInterval: TimeInterval {
+        AppConfig.pollInterval
+    }
+
+    var effectiveSystemPrompt: String {
+        let settings = SettingsManager.shared.settings
+        if settings.language == "en" {
+            return "You are a WeChat chat assistant. Generate 3 different style reply suggestions based on the other person's message. Requirements: natural, conversational, not exaggerated."
+        }
+        return AppConfig.systemPrompt
+    }
+
     func startMonitoring() {
         refreshStyleProfile()
         stopMonitoring()
-        timer = Timer.scheduledTimer(withTimeInterval: AppConfig.pollInterval, repeats: true) { [weak self] _ in
+        let interval = effectivePollInterval
+        timer = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { [weak self] _ in
             Task { @MainActor in
                 self?.pollClipboard()
             }
@@ -102,12 +129,34 @@ final class AssistantViewModel: ObservableObject {
     func likeSuggestion(_ suggestion: String) {
         NSPasteboard.general.clearContents()
         NSPasteboard.general.setString(suggestion, forType: .string)
-        appendFeedback(chosen: suggestion)
+        appendFeedback(chosen: suggestion, recognizedCount: contextMessages.count)
+        recordHistory(chosen: suggestion)
         statusText = "已点赞并复制"
     }
 
+    func dislikeSuggestion(_ suggestion: String) {
+        appendFeedback(chosen: nil, recognizedCount: contextMessages.count, rejected: suggestion)
+        statusText = "已反馈"
+    }
+
+    func copyAllSuggestions() {
+        copyAll()
+    }
+
+    func refreshHistory() {
+        historyCount = HistoryManager.shared.loadRecords().count
+    }
+
+    func reloadSettings() {
+        if recognitionMode == .clipboard {
+            stopMonitoring()
+            startMonitoring()
+        }
+        visionRecognizer = nil
+    }
+
     private func pollClipboard() {
-        if AppConfig.wechatOnlyMode && !isWechatForeground {
+        if effectiveWechatOnlyMode && !isWechatForeground {
             return
         }
         guard let raw = NSPasteboard.general.string(forType: .string) else { return }
@@ -122,8 +171,8 @@ final class AssistantViewModel: ObservableObject {
 
         if AppConfig.enableContextMemory {
             contextMessages.append(text)
-            if contextMessages.count > AppConfig.contextWindowSize {
-                contextMessages.removeFirst(contextMessages.count - AppConfig.contextWindowSize)
+            if contextMessages.count > effectiveContextWindowSize {
+                contextMessages.removeFirst(contextMessages.count - effectiveContextWindowSize)
             }
         }
 
@@ -166,33 +215,56 @@ final class AssistantViewModel: ObservableObject {
     private func buildPrompt(_ userMessage: String) -> String {
         let styleHint = styleInstructionBlock()
         if !AppConfig.enableContextMemory {
-            return "对方消息：\n\(userMessage)\n\n请输出3条不同风格的中文回复建议。\n\(styleHint)\n请严格输出一个 JSON 数组，示例：[\"回复1\",\"回复2\",\"回复3\"]。"
+            return buildBasicPrompt(userMessage, styleHint: styleHint)
         }
 
         let history = contextMessages.enumerated().map { "\($0.offset + 1). \($0.element)" }.joined(separator: "\n")
-        return "最近消息：\n\(history.isEmpty ? "(无)" : history)\n\n当前消息：\n\(userMessage)\n\n请输出3条不同风格的中文回复建议。\n\(styleHint)\n请严格输出一个 JSON 数组，示例：[\"回复1\",\"回复2\",\"回复3\"]。"
+        return buildContextPrompt(history: history, currentMessage: userMessage, styleHint: styleHint)
+    }
+
+    private func buildBasicPrompt(_ message: String, styleHint: String) -> String {
+        if SettingsManager.shared.settings.language == "en" {
+            return "Message:\n\(message)\n\nGenerate 3 different style reply suggestions.\n\(styleHint)\nOutput JSON array: [\"reply1\",\"reply2\",\"reply3\"]."
+        }
+        return "对方消息：\n\(message)\n\n请输出3条不同风格的中文回复建议。\n\(styleHint)\n请严格输出一个 JSON 数组，示例：[\"回复1\",\"回复2\",\"回复3\"]。"
+    }
+
+    private func buildContextPrompt(history: String, currentMessage: String, styleHint: String) -> String {
+        if SettingsManager.shared.settings.language == "en" {
+            return "Recent messages:\n\(history.isEmpty ? "(none)" : history)\n\nCurrent message:\n\(currentMessage)\n\nGenerate 3 different style reply suggestions.\n\(styleHint)\nOutput JSON array: [\"reply1\",\"reply2\",\"reply3\"]."
+        }
+        return "最近消息：\n\(history.isEmpty ? "(无)" : history)\n\n当前消息：\n\(currentMessage)\n\n请输出3条不同风格的中文回复建议。\n\(styleHint)\n请严格输出一个 JSON 数组，示例：[\"回复1\",\"回复2\",\"回复3\"]。"
     }
 
     private func generateReply(for userMessage: String) {
         isGenerating = true
+        isStreaming = false
         lastUserMessage = userMessage
         lastContextSnapshot = contextMessages
         statusText = "生成中..."
 
         Task {
             do {
-                let content = try await fetchCompletion(prompt: buildPrompt(userMessage))
+                let content = try await fetchCompletionStreaming(prompt: buildPrompt(userMessage))
                 let parsed = parseSuggestions(content)
-                suggestions = Array(parsed.prefix(3))
-                let count = AppConfig.enableContextMemory ? contextMessages.count : 0
-                statusText = count > 0 ? "已生成（上下文 \(count) 条）" : "已生成"
+                await MainActor.run {
+                    self.suggestions = Array(parsed.prefix(3))
+                    let count = AppConfig.enableContextMemory ? self.contextMessages.count : 0
+                    self.statusText = count > 0 ? "已生成（上下文 \(count) 条）" : "已生成"
+                    self.isStreaming = false
+                }
             } catch {
-                suggestions = []
-                statusText = "生成失败：\(error.localizedDescription)"
+                await MainActor.run {
+                    self.suggestions = []
+                    self.statusText = "生成失败：\(error.localizedDescription)"
+                    self.isStreaming = false
+                }
             }
 
-            isGenerating = false
-            consumePendingIfNeeded()
+            await MainActor.run {
+                self.isGenerating = false
+                self.consumePendingIfNeeded()
+            }
         }
     }
 
@@ -204,7 +276,8 @@ final class AssistantViewModel: ObservableObject {
     }
 
     private func fetchCompletion(prompt: String) async throws -> String {
-        let base = AppConfig.openAIBaseURL
+        let settings = SettingsManager.shared.settings
+        let base = settings.openAIBaseURL
             .trimmingCharacters(in: .whitespacesAndNewlines)
             .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
         guard let url = URL(string: "\(base)/chat/completions") else {
@@ -215,12 +288,15 @@ final class AssistantViewModel: ObservableObject {
         request.httpMethod = "POST"
         request.timeoutInterval = 60
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        if !settings.openAIAPIKey.isEmpty {
+            request.setValue("Bearer \(settings.openAIAPIKey)", forHTTPHeaderField: "Authorization")
+        }
 
         let body = ChatCompletionRequest(
-            model: AppConfig.openAIModel,
+            model: settings.openAIModel,
             temperature: 0.7,
             messages: [
-                .init(role: "system", content: AppConfig.systemPrompt),
+                .init(role: "system", content: effectiveSystemPrompt),
                 .init(role: "user", content: prompt),
             ]
         )
@@ -236,11 +312,85 @@ final class AssistantViewModel: ObservableObject {
         return decoded.choices.first?.message.content.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
     }
 
+    private func fetchCompletionStreaming(prompt: String) async throws -> String {
+        let settings = SettingsManager.shared.settings
+        let base = settings.openAIBaseURL
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+        guard let url = URL(string: "\(base)/chat/completions") else {
+            throw URLError(.badURL)
+        }
+
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.timeoutInterval = 120
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        if !settings.openAIAPIKey.isEmpty {
+            request.setValue("Bearer \(settings.openAIAPIKey)", forHTTPHeaderField: "Authorization")
+        }
+
+        let streamBody: [String: Any] = [
+            "model": settings.openAIModel,
+            "temperature": 0.7,
+            "stream": true,
+            "messages": [
+                ["role": "system", "content": effectiveSystemPrompt],
+                ["role": "user", "content": prompt]
+            ]
+        ]
+        request.httpBody = try JSONSerialization.data(withJSONObject: streamBody)
+
+        let (bytes, response) = try await URLSession.shared.bytes(for: request)
+        guard let http = response as? HTTPURLResponse, (200..<300).contains(http.statusCode) else {
+            throw NSError(domain: "AIwechatMac", code: 1, userInfo: [NSLocalizedDescriptionKey: "请求失败"])
+        }
+
+        var fullContent = ""
+        var buffer = Data()
+
+        for try await byte in bytes {
+            if byte == 10 { // newline
+                let line = String(data: buffer, encoding: .utf8) ?? ""
+                buffer = Data()
+                if line.hasPrefix("data: ") {
+                    let jsonStr = String(line.dropFirst(6))
+                    if jsonStr == "[DONE]" { break }
+                    if let data = jsonStr.data(using: .utf8),
+                       let chunk = try? JSONDecoder().decode(StreamChunk.self, from: data) {
+                        let delta = chunk.choices.first?.delta.content ?? ""
+                        if !delta.isEmpty {
+                            fullContent += delta
+                            await MainActor.run {
+                                self.streamingText = fullContent
+                            }
+                        }
+                    }
+                }
+            } else {
+                buffer.append(byte)
+            }
+        }
+
+        await MainActor.run {
+            self.streamingText = ""
+        }
+        return fullContent.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    private struct StreamChunk: Decodable {
+        struct Choice: Decodable {
+            struct Delta: Decodable {
+                let content: String
+            }
+            let delta: Delta
+        }
+        let choices: [Choice]
+    }
+
     private func parseSuggestions(_ content: String) -> [String] {
         let text = content.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return [] }
 
-        // Try JSON array first
         if let data = text.data(using: .utf8),
            let array = try? JSONSerialization.jsonObject(with: data) as? [Any] {
             let parsed = array.compactMap { obj -> String? in
@@ -250,7 +400,6 @@ final class AssistantViewModel: ObservableObject {
             if !parsed.isEmpty { return parsed }
         }
 
-        // Fallback: split by lines, strip numbering
         let lines = text.components(separatedBy: "\n")
         let parsed = lines.compactMap { line -> String? in
             var s = line.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -261,14 +410,15 @@ final class AssistantViewModel: ObservableObject {
         return parsed.isEmpty ? [text] : parsed
     }
 
-    private func appendFeedback(chosen: String) {
+    private func appendFeedback(chosen: String?, recognizedCount: Int = 0, rejected: String? = nil) {
         let record: [String: Any] = [
             "timestamp": ISO8601DateFormatter().string(from: Date()),
             "sourceMessage": lastUserMessage,
             "contextMessages": lastContextSnapshot,
             "candidates": suggestions,
-            "chosen": chosen,
-            "model": AppConfig.openAIModel
+            "chosen": chosen as Any,
+            "rejected": rejected as Any,
+            "model": SettingsManager.shared.settings.openAIModel
         ]
 
         guard let data = try? JSONSerialization.data(withJSONObject: record),
@@ -289,6 +439,20 @@ final class AssistantViewModel: ObservableObject {
         refreshStyleProfile()
     }
 
+    private func recordHistory(chosen: String?) {
+        let record = HistoryRecord(
+            contextMessages: lastContextSnapshot,
+            sourceMessage: lastUserMessage,
+            candidates: suggestions,
+            chosen: chosen,
+            model: SettingsManager.shared.settings.openAIModel,
+            recognitionMode: recognitionMode == .vision ? "vision" : "clipboard",
+            recognizedCount: contextMessages.count
+        )
+        HistoryManager.shared.append(record)
+        historyCount = HistoryManager.shared.loadRecords().count
+    }
+
     private var feedbackFileURL: URL {
         FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent("AIwechat/preferences.jsonl")
@@ -301,12 +465,17 @@ final class AssistantViewModel: ObservableObject {
 
     private func styleInstructionBlock() -> String {
         guard let profile = styleProfile else {
-            return "风格：自然口语，简洁清晰。"
+            return SettingsManager.shared.settings.language == "en"
+                ? "Style: natural, conversational."
+                : "风格：自然口语，简洁清晰。"
         }
-        return "用户偏好：平均\(profile.avgLength)字每条，保持自然。"
+        return SettingsManager.shared.settings.language == "en"
+            ? "User preference: avg \(profile.avgLength) chars per reply, keep natural."
+            : "用户偏好：平均\(profile.avgLength)字每条，保持自然。"
     }
 
     private func refreshStyleProfile() {
+        guard SettingsManager.shared.settings.enableStyleLearning else { return }
         guard let data = try? Data(contentsOf: feedbackFileURL),
               let text = String(data: data, encoding: .utf8) else { return }
 
@@ -343,8 +512,13 @@ final class AssistantViewModel: ObservableObject {
         statusText = "截取屏幕中..."
         Task {
             do {
-                let imageData = try ScreenCapture.captureScreen()
-                try await recognizeImage(imageData)
+                let imageData: Data
+                if SettingsManager.shared.settings.captureWechatWindowOnly {
+                    imageData = try ScreenCapture.captureWindow(named: AppConfig.wechatAppName)
+                } else {
+                    imageData = try ScreenCapture.captureScreen()
+                }
+                try await recognizeImage(imageData, retries: 2)
             } catch {
                 await MainActor.run {
                     statusText = "截图失败: \(error.localizedDescription)"
@@ -353,7 +527,7 @@ final class AssistantViewModel: ObservableObject {
         }
     }
 
-    private func recognizeImage(_ imageData: Data) async throws {
+    private func recognizeImage(_ imageData: Data, retries: Int) async throws {
         await MainActor.run {
             statusText = "识别消息中..."
         }
@@ -364,20 +538,28 @@ final class AssistantViewModel: ObservableObject {
 
         guard let recognizer = visionRecognizer else { return }
 
-        do {
-            let messages = try await recognizer.recognize(imageData: imageData)
-            await MainActor.run {
-                processRecognizedMessages(messages)
+        var lastError: Error?
+        for attempt in 0...(retries > 0 ? retries : 0) {
+            do {
+                let messages = try await recognizer.recognize(imageData: imageData)
+                await MainActor.run {
+                    processRecognizedMessages(messages)
+                }
+                return
+            } catch {
+                lastError = error
+                if attempt < retries {
+                    try? await Task.sleep(nanoseconds: 2_000_000_000)
+                }
             }
-        } catch {
-            await MainActor.run {
-                statusText = "识别失败: \(error.localizedDescription)"
-            }
+        }
+
+        await MainActor.run {
+            statusText = "识别失败: \(lastError?.localizedDescription ?? "未知错误")"
         }
     }
 
     private func processRecognizedMessages(_ messages: RecognizedMessages) {
-        // 构建上下文消息列表：先放对方消息，再放我的消息
         var allMessages: [String] = []
         allMessages.append(contentsOf: messages.their)
         allMessages.append(contentsOf: messages.mine)
@@ -387,10 +569,9 @@ final class AssistantViewModel: ObservableObject {
             return
         }
 
-        // 更新上下文
         contextMessages = allMessages
+        pendingRecognizedMessages = messages
 
-        // 使用最后一条对方消息生成回复
         if let lastTheirMessage = messages.their.last {
             lastUserMessage = lastTheirMessage
             lastContextSnapshot = contextMessages
@@ -400,45 +581,68 @@ final class AssistantViewModel: ObservableObject {
         }
     }
 
+    func confirmRecognizedMessages(editedTheir: [String], editedMine: [String]) {
+        var allMessages: [String] = []
+        allMessages.append(contentsOf: editedTheir)
+        allMessages.append(contentsOf: editedMine)
+
+        contextMessages = allMessages
+        pendingRecognizedMessages = nil
+
+        if let lastTheirMessage = editedTheir.last {
+            lastUserMessage = lastTheirMessage
+            lastContextSnapshot = contextMessages
+            generateReplyFromVision(for: lastTheirMessage)
+        }
+    }
+
+    func cancelRecognition() {
+        pendingRecognizedMessages = nil
+        contextMessages.removeAll()
+        statusText = "已取消识别"
+    }
+
     private func generateReplyFromVision(for userMessage: String) {
         isGenerating = true
+        isStreaming = false
         statusText = "生成中..."
 
         Task {
             do {
-                let content = try await fetchCompletion(prompt: buildPromptFromVision(userMessage))
+                let content = try await fetchCompletionStreaming(prompt: buildPromptFromVision(userMessage))
                 let parsed = parseSuggestions(content)
-                suggestions = Array(parsed.prefix(3))
                 await MainActor.run {
-                    let count = contextMessages.count
-                    statusText = "已生成（识别 \(count) 条消息）"
+                    self.suggestions = Array(parsed.prefix(3))
+                    let count = self.contextMessages.count
+                    self.statusText = "已生成（识别 \(count) 条消息）"
+                    self.isStreaming = false
                 }
             } catch {
                 await MainActor.run {
-                    suggestions = []
-                    statusText = "生成失败: \(error.localizedDescription)"
+                    self.suggestions = []
+                    self.statusText = "生成失败: \(error.localizedDescription)"
+                    self.isStreaming = false
                 }
             }
 
-            isGenerating = false
+            await MainActor.run {
+                self.isGenerating = false
+            }
         }
     }
 
     private func buildPromptFromVision(_ userMessage: String) -> String {
         let styleHint = styleInstructionBlock()
-
-        // 构建视觉模式下的上下文信息
         let theirMessages = contextMessages.filter { msg in
             !AppConfig.ignoreSelfPrefixes.contains { msg.hasPrefix($0) }
         }
 
         if theirMessages.count <= 1 {
-            return "对方消息：\n\(userMessage)\n\n请输出3条不同风格的中文回复建议。\n\(styleHint)\n请严格输出一个 JSON 数组，示例：[\"回复1\",\"回复2\",\"回复3\"]。"
+            return buildBasicPrompt(userMessage, styleHint: styleHint)
         }
 
-        // 多条消息时，显示完整上下文
         let history = contextMessages.enumerated().map { "\($0.offset + 1). \($0.element)" }.joined(separator: "\n")
-        return "聊天上下文：\n\(history)\n\n请基于以上上下文，输出3条不同风格的中文回复建议。\n\(styleHint)\n请严格输出一个 JSON 数组，示例：[\"回复1\",\"回复2\",\"回复3\"]。"
+        return buildContextPrompt(history: history, currentMessage: userMessage, styleHint: styleHint)
     }
 
     func toggleRecognitionMode() {
@@ -446,9 +650,11 @@ final class AssistantViewModel: ObservableObject {
         case .clipboard:
             recognitionMode = .vision
             stopMonitoring()
+            contextMessages.removeAll()
             statusText = "视觉模式（快捷键 ⌘⇧V 触发）"
         case .vision:
             recognitionMode = .clipboard
+            pendingRecognizedMessages = nil
             startMonitoring()
             statusText = "剪贴板模式"
         }

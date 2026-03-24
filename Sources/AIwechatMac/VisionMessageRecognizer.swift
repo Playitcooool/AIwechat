@@ -55,10 +55,13 @@ enum VisionRecognizerError: Error, LocalizedError {
 actor VisionMessageRecognizer {
     private let baseURL: String
     private let model: String
+    private let apiKey: String
 
-    init(baseURL: String = AppConfig.visionBaseURL, model: String = AppConfig.visionModel) {
-        self.baseURL = baseURL
-        self.model = model
+    init() {
+        let settings = SettingsManager.shared.settings
+        self.baseURL = settings.visionBaseURL
+        self.model = settings.visionModel
+        self.apiKey = settings.visionAPIKey
     }
 
     private let systemPrompt = """
@@ -122,6 +125,9 @@ actor VisionMessageRecognizer {
         urlRequest.httpMethod = "POST"
         urlRequest.timeoutInterval = 120
         urlRequest.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        if !apiKey.isEmpty {
+            urlRequest.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
+        }
 
         let encoder = JSONEncoder()
         urlRequest.httpBody = try encoder.encode(request)
