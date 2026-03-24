@@ -7,7 +7,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem?
     private var popover: NSPopover?
     var statusViewModel: AssistantViewModel?
-    private var appViewModel: AssistantViewModel?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         let settings = SettingsManager.shared.settings
@@ -18,10 +17,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             NSApp.activate(ignoringOtherApps: true)
         }
         registerGlobalHotKey()
-    }
-
-    func setAppViewModel(_ vm: AssistantViewModel) {
-        self.appViewModel = vm
     }
 
     private func setupMenuBarMode() {
@@ -99,7 +94,6 @@ struct AIwechatMacApp: App {
                     viewModel.refreshHistory()
                     viewModel.startMonitoring()
                     NSApp.activate(ignoringOtherApps: true)
-                    appDelegate.setAppViewModel(viewModel)
                 }
                 .onReceive(NotificationCenter.default.publisher(for: .captureScreenShortcut)) { _ in
                     let targetVM: AssistantViewModel

@@ -8,10 +8,10 @@ struct HistoryRecord: Codable, Identifiable {
     let candidates: [String]
     let chosen: String?
     let model: String
-    let recognitionMode: String
+    let recognitionMode: RecognitionMode
     let recognizedCount: Int
 
-    init(contextMessages: [String], sourceMessage: String, candidates: [String], chosen: String?, model: String, recognitionMode: String, recognizedCount: Int) {
+    init(contextMessages: [String], sourceMessage: String, candidates: [String], chosen: String?, model: String, recognitionMode: RecognitionMode, recognizedCount: Int) {
         self.id = UUID()
         self.timestamp = Date()
         self.contextMessages = contextMessages
@@ -46,6 +46,14 @@ final class HistoryManager {
             return []
         }
         return records
+    }
+
+    func recordCount() -> Int {
+        guard let data = try? Data(contentsOf: historyFileURL),
+              let records = try? JSONDecoder().decode([HistoryRecord].self, from: data) else {
+            return 0
+        }
+        return records.count
     }
 
     func clearHistory() {

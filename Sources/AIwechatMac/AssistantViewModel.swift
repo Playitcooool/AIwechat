@@ -19,7 +19,7 @@ struct AppConfig {
     static let visionBaseURL = "https://api.openai.com/v1"
 }
 
-enum RecognitionMode {
+enum RecognitionMode: Codable {
     case clipboard
     case vision
 }
@@ -144,7 +144,7 @@ final class AssistantViewModel: ObservableObject {
     }
 
     func refreshHistory() {
-        historyCount = HistoryManager.shared.loadRecords().count
+        historyCount = HistoryManager.shared.recordCount()
     }
 
     func reloadSettings() {
@@ -446,11 +446,11 @@ final class AssistantViewModel: ObservableObject {
             candidates: suggestions,
             chosen: chosen,
             model: SettingsManager.shared.settings.openAIModel,
-            recognitionMode: recognitionMode == .vision ? "vision" : "clipboard",
+            recognitionMode: recognitionMode,
             recognizedCount: contextMessages.count
         )
         HistoryManager.shared.append(record)
-        historyCount = HistoryManager.shared.loadRecords().count
+        historyCount = HistoryManager.shared.recordCount()
     }
 
     private var feedbackFileURL: URL {

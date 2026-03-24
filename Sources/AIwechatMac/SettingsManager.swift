@@ -43,19 +43,6 @@ final class SettingsManager {
         set { AppSettings.current = newValue }
     }
 
-    var isVisionConfigured: Bool {
-        !settings.visionAPIKey.isEmpty || settings.visionBaseURL.contains("lmstudio")
-    }
-
-    var effectiveVisionBaseURL: String {
-        let base = settings.visionBaseURL.trimmingCharacters(in: .whitespacesAndNewlines)
-        return base.trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-    }
-
-    var effectiveVisionAPIKey: String {
-        settings.visionAPIKey
-    }
-
     func openSettingsFile() {
         let url = settingsFileURL
         NSWorkspace.shared.open(url)

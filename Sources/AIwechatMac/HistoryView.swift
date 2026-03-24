@@ -55,12 +55,12 @@ struct HistoryView: View {
     private func historyCard(_ record: HistoryRecord) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             HStack {
-                Text(record.recognitionMode == "vision" ? "视觉" : "剪贴板")
+                Text(record.recognitionMode == .vision ? "视觉" : "剪贴板")
                     .font(.system(size: 10, weight: .medium))
                     .foregroundStyle(.white)
                     .padding(.horizontal, 6)
                     .padding(.vertical, 2)
-                    .background(record.recognitionMode == "vision"
+                    .background(record.recognitionMode == .vision
                         ? Color(red: 0.2, green: 0.4, blue: 0.6)
                         : Color(red: 0.15, green: 0.35, blue: 0.25))
                     .clipShape(RoundedRectangle(cornerRadius: 4))
